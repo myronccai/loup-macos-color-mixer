@@ -1,0 +1,752 @@
+@mode(host.native)
+
+# loup-macos-color-mixer — mix a color with RGB or HSB sliders, a hex field or the
+# color well; see it in a large swatch with its harmonies (complementary,
+# analogous, triadic), drawn on an appkit.canvas; copy its hex value.
+#
+# The model (colormodel.loup, host.dual) holds the color and does every
+# conversion; this module only builds the window and keeps the controls in
+# sync with the model. Every control's handler turns the user's input into a
+# new Mixer value and calls `apply`, which stores it and rewrites every
+# control from it — except a channel field the user is still typing in (it
+# keeps what was typed, e.g. "300", until Return clamps it to 255) and the
+# color well while its color panel is in use (rewriting it would fight the
+# panel). A channel field applies each keystroke that leaves a whole number
+# in it (a live update); it commits — shows the value clamped to the
+# channel's range — on Return and when it loses the focus (TextField.onSubmit
+# runs on both).
+#
+# The controls live in one `Ui` object kept in a module-level list, and the
+# handlers are closures that capture at most a channel index: they reach the
+# controls through `ui()`.
+#
+# `--self-test [png]` drives the window through its controls (sliders, fields
+# typed key by key, the hex field, the mode switch, a click on a harmony
+# swatch, the color well, the Copy Hex button, the Color menu's items and
+# shortcuts), prints what the controls and the canvas pixels show, writes a
+# snapshot to `png` and quits.
+#
+# There is no raw Objective-C here: the appkit proxies cover all of it.
+
+from appkit.app import (appInit, run, quit, after, isSelfTest, isDarkMode, Window, Menu, MenuItem,
+    addMenu, pixelHex, MOD_COMMAND, MOD_SHIFT_COMMAND, PRIORITY_HIGH, PRIORITY_REQUIRED);
+from appkit.controls import (Color, ColorRef, Label, Button, TextField, Slider, SegmentedControl,
+    ColorWell, monospacedFont, systemColor, COLOR_SYSTEM_GRAY, COLOR_SYSTEM_RED, TEXT_RIGHT);
+from appkit.layout import (VStack, HStack, setMinSize, layoutNow, ALIGN_FILL, ALIGN_CENTER);
+from appkit.canvas import (Canvas, Graphics);
+from appkit.dialogs import (copyText, pasteText, saveClipboard, restoreClipboard);
+from colormodel import (Rgb, Mixer, MODE_RGB, MODE_HSB, CHANNELS, rgb, newMixer, withMode, withRgb,
+    withHex, withChannel, channelNames, channelMax, channelValue, channelText, parseChannel, toHex,
+    rgbText, hsbText, isLight, harmonies, harmonyNames, roundToInt, isBlank);
+
+const WINDOW_W: float = 560.0;
+const WINDOW_H: float = 570.0;
+
+# Canvas geometry (canvas points, top-left origin): the large swatch fills
+# the top; under it a caption, then a row of harmony swatches, each with its
+# name and hex value below it.
+const SWATCH_RADIUS: float = 12.0;
+const HARMONY_BLOCK_H: float = 118.0;
+const HARMONY_CAPTION_GAP: float = 12.0;
+const HARMONY_TOP_GAP: float = 34.0;
+const HARMONY_GAP: float = 12.0;
+const HARMONY_H: float = 46.0;
+
+# Where an `apply` came from: that control is not rewritten (see the module
+# comment). SOURCE_FIELD + i is channel field i.
+const SOURCE_NONE: int = -1;
+const SOURCE_FIELD: int = 0;
+const SOURCE_WELL: int = 10;
+
+const HINT: string = "Drag a slider, type a value or a hex color, or click a harmony swatch.";
+
+## The window and every control the handlers and the self-test reach.
+class Ui {
+    pub let win: Window;
+    pub let mode: SegmentedControl;
+    pub let well: ColorWell;
+    pub let names: list[Label];
+    pub let sliders: list[Slider];
+    pub let fields: list[TextField];
+    pub let units: list[Label];
+    pub let hex: TextField;
+    pub let copy: Button;
+    pub let canvas: Canvas;
+    pub let status: Label;
+    pub let rgbItem: MenuItem;
+    pub let hsbItem: MenuItem;
+    pub let complementItem: MenuItem;
+    ## The status line's ink: dynamic system colors (light and dark mode).
+    pub let hintInk: ColorRef;
+    pub let problemInk: ColorRef;
+
+    pub func constructor() {
+        let win = Window("Color Mixer", WINDOW_W, WINDOW_H);
+        win.setMinSize(480.0, 520.0);
+
+        let root = VStack();
+        root.setInsets(20.0, 20.0, 16.0, 20.0);
+        root.setSpacing(14.0);
+        root.setAlignment(ALIGN_FILL);
+
+        # Top row: the mode switch, and the color well on the right.
+        let top = HStack();
+        top.setAlignment(ALIGN_CENTER);
+        let mode = SegmentedControl(["RGB", "HSB"]);
+        mode.setWidth(140.0);
+        top.add(mode);
+        top.addSpacer();
+        let well_label = Label("Color well");
+        top.add(well_label);
+        let well = ColorWell(0.0, 0.0, 0.0);
+        well.setWidth(56.0);
+        well.setHeight(28.0);
+        top.add(well);
+        root.add(top);
+
+        # One row per channel: name, slider, numeric field, unit.
+        var names: list[Label] = [];
+        var sliders: list[Slider] = [];
+        var fields: list[TextField] = [];
+        var units: list[Label] = [];
+        var i = 0;
+        while (i < CHANNELS) {
+            let row = HStack();
+            row.setAlignment(ALIGN_CENTER);
+            row.setSpacing(10.0);
+            let name = Label("");
+            name.setAlignment(TEXT_RIGHT);
+            name.setWidth(80.0);
+            row.add(name);
+            let slider = Slider(0.0, 255.0, 0.0);
+            setMinSize(slider, 200.0, 0.0);
+            row.addExpanding(slider);
+            let field = TextField("");
+            field.setWidth(56.0);
+            # The stretched slider beside it must not squeeze the field below
+            # its natural height (that clips its text).
+            field.setCompressionResistance(PRIORITY_HIGH, PRIORITY_REQUIRED);
+            field.setAlignment(TEXT_RIGHT);
+            field.applyFont(monospacedFont(13.0, false));
+            row.add(field);
+            let unit = Label("");
+            unit.setWidth(14.0);
+            row.add(unit);
+            root.add(row);
+            names.push(name);
+            sliders.push(slider);
+            fields.push(field);
+            units.push(unit);
+            i = i + 1;
+        }
+
+        # The hex field and the Copy Hex button.
+        let hex_row = HStack();
+        hex_row.setAlignment(ALIGN_CENTER);
+        hex_row.setSpacing(10.0);
+        let hex_label = Label("Hex");
+        hex_label.setAlignment(TEXT_RIGHT);
+        hex_label.setWidth(80.0);
+        hex_row.add(hex_label);
+        let hex = TextField("");
+        hex.setWidth(100.0);
+        hex.applyFont(monospacedFont(13.0, false));
+        hex.setPlaceholder("#RRGGBB");
+        hex_row.add(hex);
+        hex_row.addSpacer();
+        let copy = Button("Copy Hex");
+        hex_row.add(copy);
+        root.add(hex_row);
+
+        # The swatch and the harmonies.
+        let canvas = Canvas(WINDOW_W - 40.0, 300.0);
+        setMinSize(canvas, 0.0, 260.0);
+        root.addExpanding(canvas);
+
+        let hint_ink = systemColor(COLOR_SYSTEM_GRAY);
+        let problem_ink = systemColor(COLOR_SYSTEM_RED);
+        let status = Label(HINT);
+        status.setFont(12.0, false);
+        status.applyTextColor(hint_ink);
+        root.add(status);
+
+        win.setContent(root);
+
+        # The Color menu: the modes (checked), Copy Hex and Use Complement, each
+        # with a keyboard shortcut.
+        let color_menu = Menu("Color");
+        let rgb_item = color_menu.addItem("RGB Sliders", "1", func(): void { selectMode(MODE_RGB); });
+        let hsb_item = color_menu.addItem("HSB Sliders", "2", func(): void { selectMode(MODE_HSB); });
+        color_menu.addSeparator();
+        color_menu.addItemWithModifiers("Copy Hex", "c", MOD_SHIFT_COMMAND, func(): void { copyHex(); });
+        let complement_item = color_menu.addItem("Use Complement", "k", func(): void { useHarmony(0); });
+        addMenu(color_menu);
+
+        this.win = win;
+        this.mode = mode;
+        this.well = well;
+        this.names = names;
+        this.sliders = sliders;
+        this.fields = fields;
+        this.units = units;
+        this.hex = hex;
+        this.copy = copy;
+        this.canvas = canvas;
+        this.status = status;
+        this.rgbItem = rgb_item;
+        this.hsbItem = hsb_item;
+        this.complementItem = complement_item;
+        this.hintInk = hint_ink;
+        this.problemInk = problem_ink;
+    }
+}
+
+var g_ui: list[Ui] = [];
+var g_mixer: list[Mixer] = [];
+
+func ui(): Ui {
+    let u = g_ui[0];
+    return u;
+}
+
+func mixer(): Mixer {
+    let m = g_mixer[0];
+    return m;
+}
+
+# ── keeping the controls in sync ───────────────────────────────────────────
+
+## The unit shown after channel `index`'s field in `mode`.
+func unitOf(mode: int, index: int): string {
+    if (mode == MODE_RGB) {
+        return "";
+    }
+    if (index == 0) {
+        return "°";
+    }
+    return "%";
+}
+
+## The 8-bit form of an sRGB color with components in 0..1.
+func rgbOf(c: Color): Rgb {
+    let out = rgb(roundToInt(c.r * 255.0), roundToInt(c.g * 255.0), roundToInt(c.b * 255.0));
+    return out;
+}
+
+## The 0..1 form of an 8-bit channel (for NSColor and drawing).
+func unit8(n: int): float {
+    let f = (n as float) / 255.0;
+    return f;
+}
+
+## Make `m` the current color and rewrite every control from it, except the
+## one `source` names (SOURCE_NONE rewrites them all).
+func apply(m: Mixer, source: int): void {
+    g_mixer[0] = m;
+    let u = ui();
+    let names = channelNames(m.mode);
+    var i = 0;
+    while (i < CHANNELS) {
+        u.names[i].setText(names[i]);
+        u.units[i].setText(unitOf(m.mode, i));
+        u.sliders[i].setMax(channelMax(m.mode, i));
+        u.sliders[i].setValue(channelValue(m, i));
+        if (source != SOURCE_FIELD + i) {
+            u.fields[i].setText(channelText(m, i));
+        }
+        i = i + 1;
+    }
+    u.hex.setText(toHex(m.rgb));
+    if (source != SOURCE_WELL) {
+        u.well.setColor(unit8(m.rgb.r), unit8(m.rgb.g), unit8(m.rgb.b), 1.0);
+    }
+    u.mode.setSelectedIndex(m.mode);
+    u.rgbItem.setChecked(m.mode == MODE_RGB);
+    u.hsbItem.setChecked(m.mode == MODE_HSB);
+    u.canvas.redraw();
+    return;
+}
+
+## Show `text` in the status line, in red when it reports a problem.
+func setStatus(text: string, problem: bool): void {
+    let u = ui();
+    u.status.setText(text);
+    if (problem) {
+        u.status.applyTextColor(u.problemInk);
+    } else {
+        u.status.applyTextColor(u.hintInk);
+    }
+    return;
+}
+
+# ── handlers ───────────────────────────────────────────────────────────────
+
+## Slider `index` moved.
+func sliderMoved(index: int): void {
+    let value = ui().sliders[index].value();
+    apply(withChannel(mixer(), index, value), SOURCE_NONE);
+    setStatus(HINT, false);
+    return;
+}
+
+## Apply the number in channel field `index`. `source` is SOURCE_FIELD + index
+## on each keystroke (the field is left as typed) and SOURCE_NONE on Return or
+## when the field loses the focus (it then shows the value as the model has
+## it, clamped to the channel's range). Text that is not a whole number is
+## reported in the status line and leaves the color as it is — as the last
+## keystroke that made a number set it. A field emptied to be retyped is
+## not a problem until it is committed empty.
+func takeField(index: int, source: int): void {
+    let text = ui().fields[index].text();
+    if (source != SOURCE_NONE and isBlank(text)) {
+        setStatus(HINT, false);
+        return;
+    }
+    try {
+        let n = parseChannel(text);
+        apply(withChannel(mixer(), index, n as float), source);
+        setStatus(HINT, false);
+    } catch (ValueError as e) {
+        setStatus("Type a whole number for " + channelNames(mixer().mode)[index] + ".", true);
+    }
+    return;
+}
+
+## Return in the hex field (or the field losing the focus). An invalid value
+## stays in the field, to be fixed, and is reported in the status line; the
+## color does not change.
+func hexSubmitted(): void {
+    let text = ui().hex.text();
+    try {
+        apply(withHex(mixer(), text), SOURCE_NONE);
+        setStatus("Set " + toHex(mixer().rgb) + ".", false);
+    } catch (ValueError as e) {
+        setStatus("“" + text + "” is not a hex color: use #RRGGBB or #RGB.", true);
+    }
+    return;
+}
+
+## The user picked a color in the color panel.
+func wellChanged(): void {
+    let picked = rgbOf(ui().well.color());
+    apply(withRgb(mixer(), picked), SOURCE_WELL);
+    setStatus("Picked " + toHex(picked) + " in the color panel.", false);
+    return;
+}
+
+## Show the sliders of `mode` (the segmented control or the Color menu).
+func selectMode(mode: int): void {
+    apply(withMode(mixer(), mode), SOURCE_NONE);
+    setStatus(HINT, false);
+    return;
+}
+
+## Put the hex value on the clipboard.
+func copyHex(): void {
+    let hex = toHex(mixer().rgb);
+    if (copyText(hex)) {
+        setStatus("Copied " + hex + " to the clipboard.", false);
+    } else {
+        setStatus("The clipboard did not take " + hex + ".", true);
+    }
+    return;
+}
+
+## Make harmony color `index` the current color.
+func useHarmony(index: int): void {
+    let m = mixer();
+    let picked = harmonies(m.hsb)[index];
+    apply(withRgb(m, picked), SOURCE_NONE);
+    setStatus("Now using the " + harmonyNames()[index] + " " + toHex(picked) + ".", false);
+    return;
+}
+
+## Connect slider and field `index` to their handlers.
+func wireChannel(index: int, slider: Slider, field: TextField): void {
+    slider.onChange(func(): void { sliderMoved(index); });
+    field.onChange(func(): void { takeField(index, SOURCE_FIELD + index); });
+    field.onSubmit(func(): void { takeField(index, SOURCE_NONE); });
+    return;
+}
+
+# ── the canvas ─────────────────────────────────────────────────────────────
+
+## The height of the large swatch on a canvas `canvas_h` points tall.
+func swatchHeight(canvas_h: float): float {
+    let h = canvas_h - HARMONY_BLOCK_H;
+    return h;
+}
+
+## The top edge of the harmony swatches.
+func harmonyTop(canvas_h: float): float {
+    let y = swatchHeight(canvas_h) + HARMONY_TOP_GAP;
+    return y;
+}
+
+## The width of one harmony swatch (they share the canvas width, with gaps).
+func harmonyWidth(canvas_w: float): float {
+    let n = harmonyNames().len() as float;
+    let w = (canvas_w - (n - 1.0) * HARMONY_GAP) / n;
+    return w;
+}
+
+## The left edge of harmony swatch `index`.
+func harmonyLeft(canvas_w: float, index: int): float {
+    let x = (index as float) * (harmonyWidth(canvas_w) + HARMONY_GAP);
+    return x;
+}
+
+## The harmony swatch under canvas point (x, y), or -1.
+func harmonyAt(x: float, y: float, canvas_w: float, canvas_h: float): int {
+    let top = harmonyTop(canvas_h);
+    if (y < top or y > top + HARMONY_H) {
+        return -1;
+    }
+    let w = harmonyWidth(canvas_w);
+    var i = 0;
+    while (i < harmonyNames().len()) {
+        let left = harmonyLeft(canvas_w, i);
+        if (x >= left and x <= left + w) {
+            return i;
+        }
+        i = i + 1;
+    }
+    return -1;
+}
+
+## Draw `c` as a rounded swatch with a hairline border.
+func swatch(g: Graphics, c: Rgb, x: float, y: float, w: float, h: float, radius: float): void {
+    g.setFillColor(unit8(c.r), unit8(c.g), unit8(c.b), 1.0);
+    g.fillRoundedRect(x, y, w, h, radius);
+    g.setStrokeColor(0.0, 0.0, 0.0, 0.18);
+    g.setLineWidth(1.0);
+    g.strokeRoundedRect(x, y, w, h, radius);
+    return;
+}
+
+## `s` drawn centered in the column [x, x + w] at height y.
+func centeredText(g: Graphics, s: string, x: float, y: float, w: float, size: float, grey: float): void {
+    let tw = g.textWidth(s, size);
+    g.text(x + (w - tw) / 2.0, y, s, size, grey, grey, grey);
+    return;
+}
+
+## Paint the canvas: the current color as a large swatch labelled with its
+## hex, RGB and HSB values (in dark or light ink, whichever reads better on
+## it), then the harmony swatches with their names and hex values.
+func drawMixer(g: Graphics): void {
+    let m = mixer();
+    let w = g.width;
+    let sh = swatchHeight(g.height);
+
+    swatch(g, m.rgb, 0.5, 0.5, w - 1.0, sh - 1.0, SWATCH_RADIUS);
+    var ink = 1.0;
+    if (isLight(m.rgb)) {
+        ink = 0.1;
+    }
+    g.text(20.0, 18.0, toHex(m.rgb), 30.0, ink, ink, ink);
+    g.text(20.0, 60.0, rgbText(m.rgb), 14.0, ink, ink, ink);
+    g.text(20.0, 80.0, hsbText(m.hsb), 14.0, ink, ink, ink);
+
+    # The captions are drawn in a grey that reads on the window background:
+    # lighter in Dark Mode.
+    var caption = 0.42;
+    if (isDarkMode()) {
+        caption = 0.68;
+    }
+    g.text(0.0, sh + HARMONY_CAPTION_GAP, "Harmonies — click one to use it", 12.0, caption, caption, caption);
+    let colors = harmonies(m.hsb);
+    let names = harmonyNames();
+    let top = harmonyTop(g.height);
+    let hw = harmonyWidth(w);
+    var i = 0;
+    while (i < colors.len()) {
+        let left = harmonyLeft(w, i);
+        swatch(g, colors[i], left + 0.5, top + 0.5, hw - 1.0, HARMONY_H - 1.0, 8.0);
+        centeredText(g, names[i], left, top + HARMONY_H + 6.0, hw, 11.0, caption);
+        centeredText(g, toHex(colors[i]), left, top + HARMONY_H + 22.0, hw, 11.0, caption);
+        i = i + 1;
+    }
+    return;
+}
+
+## A click on the canvas: a harmony swatch becomes the current color.
+func canvasClicked(x: float, y: float): void {
+    let f = ui().canvas.frame();
+    let index = harmonyAt(x, y, f.w, f.h);
+    if (index >= 0) {
+        useHarmony(index);
+    }
+    return;
+}
+
+# ── self-test ──────────────────────────────────────────────────────────────
+
+## The canvas points the self-test samples ([x0, y0, x1, y1, …]): the large
+## swatch's empty corner, then the center of each harmony swatch.
+func samplePoints(): list[float] {
+    let f = ui().canvas.frame();
+    var pts: list[float] = [f.w - 30.0, swatchHeight(f.h) - 20.0];
+    let top = harmonyTop(f.h);
+    let hw = harmonyWidth(f.w);
+    var i = 0;
+    while (i < harmonyNames().len()) {
+        pts.push(harmonyLeft(f.w, i) + hw / 2.0);
+        pts.push(top + HARMONY_H / 2.0);
+        i = i + 1;
+    }
+    return pts;
+}
+
+## The colors ("#RRGGBB") of the canvas pixels at `samplePoints()`, read from
+## one fresh rendering of the canvas — what the user sees there. The render
+## is an sRGB bitmap, so the samples are the sRGB values drawn, whatever
+## display the window is on.
+func canvasPixels(): list[string] {
+    let points = samplePoints();
+    let shot = ui().canvas.render();
+    var out: list[string] = [];
+    var i = 0;
+    while (i + 1 < points.len()) {
+        let p = shot.colorAt(points[i], points[i + 1]);
+        out.push(pixelHex(p));
+        i = i + 2;
+    }
+    shot.release();
+    return out;
+}
+
+## `title` with its menu item's check mark: "[x] RGB Sliders" or "[ ] …".
+func checkText(item: MenuItem): string {
+    var mark = "[ ] ";
+    if (item.checked()) {
+        mark = "[x] ";
+    }
+    let s = mark + item.title();
+    return s;
+}
+
+## Print what the controls show now, under the heading `step`; with
+## `with_harmonies`, also the harmony swatches as the canvas shows them.
+func report(step: string, with_harmonies: bool): void {
+    let u = ui();
+    var names: list[string] = [];
+    var fields: list[string] = [];
+    var sliders: list[string] = [];
+    var i = 0;
+    while (i < CHANNELS) {
+        names.push(u.names[i].text());
+        var field = u.fields[i].text();
+        if (field.len() == 0) {
+            field = "(empty)";
+        }
+        fields.push(field + u.units[i].text());
+        let value = roundToInt(u.sliders[i].value()).to_string();
+        let max = roundToInt(u.sliders[i].max()).to_string();
+        sliders.push(value + "/" + max);
+        i = i + 1;
+    }
+    let pixels = canvasPixels();
+    let well = toHex(rgbOf(u.well.color()));
+    let ink = u.status.textColorRef().name();
+    println("== " + step);
+    println("  mode    " + u.mode.labelAt(u.mode.selectedIndex()) + "   menu " + checkText(u.rgbItem) + "  "
+        + checkText(u.hsbItem));
+    println("  names   " + names.join(" "));
+    println("  fields  " + fields.join(" "));
+    println("  sliders " + sliders.join(" "));
+    println("  hex     " + u.hex.text() + "   well " + well + "   swatch " + pixels[0]);
+    println("  status  " + u.status.text() + "   (" + ink + ")");
+    if (with_harmonies) {
+        let harmony_names = harmonyNames();
+        var k = 0;
+        while (k < harmony_names.len()) {
+            println("  harmony " + harmony_names[k] + ": " + pixels[k + 1]);
+            k = k + 1;
+        }
+    }
+    return;
+}
+
+## Move slider `index` to `value` as a drag would (value, then its action).
+func dragSlider(index: int, value: float): void {
+    let s = ui().sliders[index];
+    s.setValue(value);
+    s.sendAction();
+    return;
+}
+
+## Type `text` over the whole text of `field` key by key, as the keyboard
+## would: ⌘A, then one key (and one change event) per character.
+func typeKeys(field: TextField, text: string): void {
+    field.selectAll();
+    var i = 0;
+    while (i < text.len()) {
+        let key: string = text[i];
+        field.typeKey(key);
+        i = i + 1;
+    }
+    return;
+}
+
+## Replace the text of `field` by typing `text` and pressing Return.
+func typeInto(field: TextField, text: string): void {
+    typeKeys(field, text);
+    field.submit();
+    return;
+}
+
+## Choose `item` as a click on it would; the step fails when nothing takes it.
+func choose(item: MenuItem): void {
+    if (not item.perform()) {
+        throw RuntimeError("self-test: nothing answered Color ▸ " + item.title());
+    }
+    return;
+}
+
+## Press the key `chars` with `modifiers` in the window, as the keyboard
+## would; the step fails when no key equivalent takes it.
+func pressKey(chars: string, modifiers: int): void {
+    if (not ui().win.sendKey(chars, modifiers)) {
+        throw RuntimeError("self-test: no menu item or button took the key '" + chars + "'");
+    }
+    return;
+}
+
+## The --self-test driver (see the module comment).
+func selfTest(): void {
+    let u = ui();
+    layoutNow(u.win.content());
+    report("start", true);
+
+    dragSlider(0, 230.0);
+    dragSlider(1, 90.0);
+    report("drag Red to 230, Green to 90", false);
+
+    typeInto(u.fields[2], "40");
+    report("type 40 in Blue, Return", false);
+
+    typeKeys(u.fields[1], "300");
+    report("type 300 in Green (applied live, clamped; the field keeps what was typed)", false);
+    u.fields[1].submit();
+    report("press Return in Green (the field shows the clamped value)", false);
+
+    typeKeys(u.fields[0], "12x");
+    report("type 1, 2, x in Red (1 and 12 applied live, 12x rejected)", false);
+
+    u.fields[0].selectAll();
+    u.fields[0].deleteBackward();
+    report("clear Red to retype it (no complaint while it is empty)", false);
+
+    typeInto(u.fields[0], "230");
+    report("type 230 in Red, Return", false);
+
+    typeInto(u.hex, "#3cb371");
+    report("type #3cb371 in Hex", true);
+
+    typeInto(u.hex, "#12345");
+    report("type #12345 in Hex (rejected)", false);
+
+    typeInto(u.hex, "f80");
+    report("type f80 in Hex (short form)", false);
+
+    u.mode.setSelectedIndex(1);
+    u.mode.sendAction();
+    report("switch to HSB", false);
+
+    dragSlider(0, 360.0);
+    report("drag Hue to its right end (360° stays 360°)", false);
+
+    typeInto(u.fields[0], "500");
+    report("type 500 in Hue, Return (clamped to 360°)", false);
+
+    dragSlider(0, 200.0);
+    report("drag Hue to 200", false);
+
+    typeInto(u.fields[1], "40");
+    report("type 40 in Saturation, Return", false);
+
+    dragSlider(2, 0.0);
+    dragSlider(2, 85.0);
+    report("drag Brightness to 0 and back to 85 (hue and saturation kept)", true);
+
+    let f = u.canvas.frame();
+    let x = harmonyLeft(f.w, 3) + harmonyWidth(f.w) / 2.0;
+    let y = harmonyTop(f.h) + HARMONY_H / 2.0;
+    u.canvas.sendMouse("down", x, y);
+    u.canvas.sendMouse("up", x, y);
+    report("click the Triad +120° swatch", false);
+
+    u.well.setColor(0.2, 0.4, 0.8, 1.0);
+    u.well.sendAction();
+    report("pick #3366CC in the color well", false);
+
+    choose(u.rgbItem);
+    choose(u.complementItem);
+    report("Color > RGB Sliders, Color > Use Complement", false);
+
+    pressKey("2", MOD_COMMAND);
+    report("press ⌘2 (Color > HSB Sliders)", false);
+
+    pressKey("k", MOD_COMMAND);
+    report("press ⌘K (Color > Use Complement)", false);
+
+    pressKey("1", MOD_COMMAND);
+    report("press ⌘1 (Color > RGB Sliders)", false);
+
+    let saved = saveClipboard();
+    u.copy.click();
+    println("== click Copy Hex");
+    println("  clipboard " + pasteText());
+    println("  status    " + u.status.text());
+    copyText("(something else)");
+    pressKey("c", MOD_SHIFT_COMMAND);
+    println("== put other text on the clipboard, press ⇧⌘C (Color > Copy Hex)");
+    println("  clipboard " + pasteText());
+    println("  status    " + u.status.text());
+    restoreClipboard(saved);
+
+    # A pleasant color for the screenshot, in HSB mode. Taking the focus off
+    # the hex field (so the snapshot shows no selection) ends its editing,
+    # which commits it again, as clicking elsewhere would.
+    u.mode.setSelectedIndex(1);
+    u.mode.sendAction();
+    typeInto(u.hex, "#2E86DE");
+    u.win.clearFocus();
+    report("final", true);
+
+    let args = runtime.args();
+    if (args.len() > 1) {
+        let shot = u.win.render();
+        shot.writePng(args[1]);
+        shot.release();
+    }
+    quit();
+    return;
+}
+
+pub func main(): void {
+    appInit("Color Mixer");
+    g_mixer.push(newMixer(rgb(46, 134, 222)));
+    let u = Ui();
+    g_ui.push(u);
+
+    var i = 0;
+    while (i < CHANNELS) {
+        wireChannel(i, u.sliders[i], u.fields[i]);
+        i = i + 1;
+    }
+    u.mode.onChange(func(): void { selectMode(ui().mode.selectedIndex()); });
+    u.hex.onSubmit(func(): void { hexSubmitted(); });
+    u.well.onChange(func(): void { wellChanged(); });
+    u.copy.onClick(func(): void { copyHex(); });
+    u.canvas.onDraw(drawMixer);
+    u.canvas.onMouseDown(canvasClicked);
+    apply(mixer(), SOURCE_NONE);
+
+    if (isSelfTest()) {
+        after(0.4, func(): void { selfTest(); });
+    }
+    run(u.win);
+    return;
+}

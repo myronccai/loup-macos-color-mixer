@@ -1,0 +1,464 @@
+@mode(host.dual)
+
+# colormodel — the color mixer's model, with no AppKit in it, so it runs
+# under `loup run` / `loup test` as well as in the native app.
+#
+# A color is held twice: as RGB (0..255 per channel — what is drawn, copied
+# and written as hex) and as HSB (hue in degrees 0..360, saturation and
+# brightness in percent 0..100). Converting RGB to HSB loses the hue of a grey
+# and the saturation of black, so the Mixer keeps the HSB it had and only
+# replaces the parts the new RGB color actually defines: dragging the
+# brightness slider down to 0 and back up returns to the same hue.
+#
+# The Mixer's hue may be 360 (the hue slider's right end): it is the same hue
+# as 0, but keeping it stops the slider's knob jumping to the left end. Every
+# conversion wraps it (`hsbToRgb`, `harmonies`); `hsb()` and `rgbToHsb` give
+# 0 ≤ h < 360.
+#
+# Every state change returns a new Mixer value (no mutation), which keeps the
+# model free of ownership rules and easy to test.
+
+## The sliders show red, green and blue.
+pub const MODE_RGB: int = 0;
+## The sliders show hue, saturation and brightness.
+pub const MODE_HSB: int = 1;
+
+## Number of channels (sliders) in either mode.
+pub const CHANNELS: int = 3;
+
+const HEX_UPPER: string = "0123456789ABCDEF";
+const HEX_LOWER: string = "0123456789abcdef";
+const DIGITS: string = "0123456789";
+
+## A color as 8-bit sRGB channels (0..255).
+pub struct Rgb {
+    pub r: int;
+    pub g: int;
+    pub b: int;
+}
+
+## A color as hue (degrees, 0 ≤ h < 360 — or 360 in a Mixer, see the module
+## comment), saturation and brightness (0..100).
+pub struct Hsb {
+    pub h: float;
+    pub s: float;
+    pub b: float;
+}
+
+## The mixer's state: which channels the sliders show, and the current color
+## both ways (see the module comment for why both are kept).
+pub struct Mixer {
+    pub mode: int;
+    pub rgb: Rgb;
+    pub hsb: Hsb;
+}
+
+# ── numbers ─────────────────────────────────────────────────────────────────
+
+## `x` rounded to the nearest integer, halves away from zero.
+pub func roundToInt(x: float): int {
+    if (x < 0.0) {
+        let down = 0 - (((0.0 - x) + 0.5) as int);
+        return down;
+    }
+    let up = (x + 0.5) as int;
+    return up;
+}
+
+func clampInt(v: int, lo: int, hi: int): int {
+    if (v < lo) {
+        return lo;
+    }
+    if (v > hi) {
+        return hi;
+    }
+    return v;
+}
+
+func clampFloat(v: float, lo: float, hi: float): float {
+    if (v < lo) {
+        return lo;
+    }
+    if (v > hi) {
+        return hi;
+    }
+    return v;
+}
+
+## `h` brought into 0 ≤ h < 360 (a hue is an angle: 370° is 10°, -30° is 330°).
+pub func wrapHue(h: float): float {
+    var w = h;
+    while (w >= 360.0) {
+        w = w - 360.0;
+    }
+    while (w < 0.0) {
+        w = w + 360.0;
+    }
+    return w;
+}
+
+# ── conversions ─────────────────────────────────────────────────────────────
+
+## An Rgb with every channel clamped into 0..255.
+pub func rgb(r: int, g: int, b: int): Rgb {
+    let c = Rgb(r = clampInt(r, 0, 255), g = clampInt(g, 0, 255), b = clampInt(b, 0, 255));
+    return c;
+}
+
+## An Hsb with the hue wrapped into 0..360 and saturation / brightness clamped
+## into 0..100.
+pub func hsb(h: float, s: float, b: float): Hsb {
+    let c = Hsb(h = wrapHue(h), s = clampFloat(s, 0.0, 100.0), b = clampFloat(b, 0.0, 100.0));
+    return c;
+}
+
+## The HSB form of `c`. A grey has hue 0 and saturation 0; black also has
+## brightness 0.
+pub func rgbToHsb(c: Rgb): Hsb {
+    let r = c.r as float;
+    let g = c.g as float;
+    let b = c.b as float;
+    var max = r;
+    if (g > max) { max = g; }
+    if (b > max) { max = b; }
+    var min = r;
+    if (g < min) { min = g; }
+    if (b < min) { min = b; }
+    let delta = max - min;
+
+    var hue = 0.0;
+    if (delta > 0.0) {
+        if (max == r) {
+            hue = 60.0 * ((g - b) / delta);
+        } else if (max == g) {
+            hue = 60.0 * ((b - r) / delta + 2.0);
+        } else {
+            hue = 60.0 * ((r - g) / delta + 4.0);
+        }
+    }
+    var sat = 0.0;
+    if (max > 0.0) {
+        sat = 100.0 * delta / max;
+    }
+    let out = hsb(hue, sat, 100.0 * max / 255.0);
+    return out;
+}
+
+## The RGB form of `c` (channels rounded to the nearest integer).
+pub func hsbToRgb(c: Hsb): Rgb {
+    let v = c.b / 100.0;
+    let s = c.s / 100.0;
+    let sector_f = wrapHue(c.h) / 60.0;
+    let sector = sector_f as int;
+    let f = sector_f - (sector as float);
+    let p = v * (1.0 - s);
+    let q = v * (1.0 - s * f);
+    let t = v * (1.0 - s * (1.0 - f));
+    var r = v;
+    var g = t;
+    var b = p;
+    if (sector == 1) {
+        r = q;
+        g = v;
+        b = p;
+    } else if (sector == 2) {
+        r = p;
+        g = v;
+        b = t;
+    } else if (sector == 3) {
+        r = p;
+        g = q;
+        b = v;
+    } else if (sector == 4) {
+        r = t;
+        g = p;
+        b = v;
+    } else if (sector == 5) {
+        r = v;
+        g = p;
+        b = q;
+    }
+    let out = rgb(roundToInt(r * 255.0), roundToInt(g * 255.0), roundToInt(b * 255.0));
+    return out;
+}
+
+## Two upper-case hex digits for `n` (0..255).
+func hexByte(n: int): string {
+    let hi = n / 16;
+    let lo = n % 16;
+    let s = HEX_UPPER[hi] + HEX_UPPER[lo];
+    return s;
+}
+
+## `c` written "#RRGGBB" (upper-case digits).
+pub func toHex(c: Rgb): string {
+    let s = "#" + hexByte(c.r) + hexByte(c.g) + hexByte(c.b);
+    return s;
+}
+
+## The value of the hex digit `ch` (either case), or -1 when it is not one.
+func hexDigit(ch: string): int {
+    var i = 0;
+    while (i < 16) {
+        if (ch == HEX_UPPER[i] or ch == HEX_LOWER[i]) {
+            return i;
+        }
+        i = i + 1;
+    }
+    return -1;
+}
+
+## `text` without leading and trailing spaces and tabs.
+func stripSpaces(text: string): string {
+    var start = 0;
+    var end = text.len();
+    while (start < end and (text[start] == " " or text[start] == "\t")) {
+        start = start + 1;
+    }
+    while (end > start and (text[end - 1] == " " or text[end - 1] == "\t")) {
+        end = end - 1;
+    }
+    var out = "";
+    var i = start;
+    while (i < end) {
+        out = out + text[i];
+        i = i + 1;
+    }
+    return out;
+}
+
+## The color written `text`: "#RRGGBB", "RRGGBB", or the short "#RGB" / "RGB"
+## (each digit doubled), in either case, surrounding spaces ignored.
+## Throws ValueError for anything else.
+pub func parseHex(text: string): Rgb {
+    let s = stripSpaces(text);
+    var start = 0;
+    if (s.len() > 0 and s[0] == "#") {
+        start = 1;
+    }
+    var digits: list[int] = [];
+    var i = start;
+    while (i < s.len()) {
+        let d = hexDigit(s[i]);
+        if (d < 0) {
+            throw ValueError("not a hex color: '" + text + "' ('" + s[i] + "' is not a hex digit)");
+        }
+        digits.push(d);
+        i = i + 1;
+    }
+    if (digits.len() == 3) {
+        let short = rgb(digits[0] * 17, digits[1] * 17, digits[2] * 17);
+        return short;
+    }
+    if (digits.len() != 6) {
+        throw ValueError("not a hex color: '" + text + "' (expected 6 hex digits, as #RRGGBB)");
+    }
+    let c = rgb(digits[0] * 16 + digits[1], digits[2] * 16 + digits[3], digits[4] * 16 + digits[5]);
+    return c;
+}
+
+## `c` written "rgb(R, G, B)".
+pub func rgbText(c: Rgb): string {
+    let s = "rgb(" + c.r.to_string() + ", " + c.g.to_string() + ", " + c.b.to_string() + ")";
+    return s;
+}
+
+## `c` written "hsb(H°, S%, B%)" with each part rounded to an integer.
+pub func hsbText(c: Hsb): string {
+    let s = "hsb(" + roundToInt(c.h).to_string() + "°, " + roundToInt(c.s).to_string() + "%, "
+        + roundToInt(c.b).to_string() + "%)";
+    return s;
+}
+
+## Whether dark text reads better than white on `c` (perceived brightness,
+## Rec. 601 weights, above the middle).
+pub func isLight(c: Rgb): bool {
+    let y = 0.299 * (c.r as float) + 0.587 * (c.g as float) + 0.114 * (c.b as float);
+    let light = y > 150.0;
+    return light;
+}
+
+# ── harmonies ───────────────────────────────────────────────────────────────
+
+## The names of the harmony colors, in the order `harmonies` returns them.
+pub func harmonyNames(): list[string] {
+    let names = ["Complement", "Analog −30°", "Analog +30°", "Triad +120°", "Triad +240°"];
+    return names;
+}
+
+## The hue rotations (degrees) behind `harmonyNames`.
+func harmonyRotations(): list[float] {
+    let turns = [180.0, -30.0, 30.0, 120.0, 240.0];
+    return turns;
+}
+
+## The harmony colors of `c`: the complementary color, the two analogous
+## colors (hue ∓30°) and the two triadic colors (hue +120° / +240°), all with
+## the saturation and brightness of `c`.
+pub func harmonies(c: Hsb): list[Rgb] {
+    var out: list[Rgb] = [];
+    for (turn in harmonyRotations()) {
+        out.push(hsbToRgb(hsb(c.h + turn, c.s, c.b)));
+    }
+    return out;
+}
+
+# ── the mixer ───────────────────────────────────────────────────────────────
+
+## A mixer in RGB mode showing `c`.
+pub func newMixer(c: Rgb): Mixer {
+    let m = Mixer(mode = MODE_RGB, rgb = c, hsb = rgbToHsb(c));
+    return m;
+}
+
+## `m` switched to `mode` (MODE_RGB or MODE_HSB; throws ValueError otherwise).
+pub func withMode(m: Mixer, mode: int): Mixer {
+    if (mode != MODE_RGB and mode != MODE_HSB) {
+        throw ValueError("unknown mixer mode " + mode.to_string());
+    }
+    let out = Mixer(mode = mode, rgb = m.rgb, hsb = m.hsb);
+    return out;
+}
+
+## An Hsb as a Mixer holds it: the hue clamped into 0..360 (360 is kept, not
+## wrapped to 0), saturation and brightness into 0..100.
+func heldHsb(h: float, s: float, b: float): Hsb {
+    let c = Hsb(h = clampFloat(h, 0.0, 360.0), s = clampFloat(s, 0.0, 100.0), b = clampFloat(b, 0.0, 100.0));
+    return c;
+}
+
+## `m` showing the color `c`. Where `c` leaves hue or saturation undefined (a
+## grey, black), the mixer keeps its current ones.
+pub func withRgb(m: Mixer, c: Rgb): Mixer {
+    let fresh = rgbToHsb(c);
+    var h = fresh.h;
+    var s = fresh.s;
+    if (fresh.s == 0.0) {
+        h = m.hsb.h;
+    }
+    if (fresh.b == 0.0) {
+        h = m.hsb.h;
+        s = m.hsb.s;
+    }
+    let out = Mixer(mode = m.mode, rgb = c, hsb = heldHsb(h, s, fresh.b));
+    return out;
+}
+
+## `m` showing the HSB color `c` exactly (its RGB form rounded).
+pub func withHsb(m: Mixer, c: Hsb): Mixer {
+    let out = Mixer(mode = m.mode, rgb = hsbToRgb(c), hsb = c);
+    return out;
+}
+
+## `m` showing the color written `text` (see parseHex; throws ValueError).
+pub func withHex(m: Mixer, text: string): Mixer {
+    let c = parseHex(text);
+    let out = withRgb(m, c);
+    return out;
+}
+
+## The channel names for `mode`.
+pub func channelNames(mode: int): list[string] {
+    if (mode == MODE_HSB) {
+        let hsb_names = ["Hue", "Saturation", "Brightness"];
+        return hsb_names;
+    }
+    let rgb_names = ["Red", "Green", "Blue"];
+    return rgb_names;
+}
+
+## The largest value of channel `index` in `mode` (its slider's maximum; the
+## minimum is always 0).
+pub func channelMax(mode: int, index: int): float {
+    if (mode == MODE_RGB) {
+        return 255.0;
+    }
+    if (index == 0) {
+        return 360.0;
+    }
+    return 100.0;
+}
+
+## The value of channel `index` of `m` in its current mode.
+pub func channelValue(m: Mixer, index: int): float {
+    if (m.mode == MODE_HSB) {
+        if (index == 0) { return m.hsb.h; }
+        if (index == 1) { return m.hsb.s; }
+        return m.hsb.b;
+    }
+    if (index == 0) { return m.rgb.r as float; }
+    if (index == 1) { return m.rgb.g as float; }
+    return m.rgb.b as float;
+}
+
+## Channel `index` of `m` as its numeric field shows it (a rounded integer).
+pub func channelText(m: Mixer, index: int): string {
+    let s = roundToInt(channelValue(m, index)).to_string();
+    return s;
+}
+
+## `m` with channel `index` (in its current mode) set to `value`, clamped to
+## the channel's range. RGB channels are rounded to integers; HSB channels are
+## kept as given, so the hue slider moves smoothly (and a hue of 360 stays
+## 360: the slider's right end).
+pub func withChannel(m: Mixer, index: int, value: float): Mixer {
+    if (index < 0 or index >= CHANNELS) {
+        throw ValueError("no channel " + index.to_string());
+    }
+    let v = clampFloat(value, 0.0, channelMax(m.mode, index));
+    if (m.mode == MODE_HSB) {
+        var h = m.hsb.h;
+        var s = m.hsb.s;
+        var b = m.hsb.b;
+        if (index == 0) { h = v; }
+        if (index == 1) { s = v; }
+        if (index == 2) { b = v; }
+        let out_hsb = withHsb(m, heldHsb(h, s, b));
+        return out_hsb;
+    }
+    let n = roundToInt(v);
+    var r = m.rgb.r;
+    var g = m.rgb.g;
+    var b = m.rgb.b;
+    if (index == 0) { r = n; }
+    if (index == 1) { g = n; }
+    if (index == 2) { b = n; }
+    let out_rgb = withRgb(m, rgb(r, g, b));
+    return out_rgb;
+}
+
+## Whether a channel field holds nothing but spaces (the user is retyping it).
+pub func isBlank(text: string): bool {
+    let blank = stripSpaces(text).len() == 0;
+    return blank;
+}
+
+## The number typed in a channel field: decimal digits, surrounding spaces
+## ignored. Throws ValueError for an empty field or anything but digits.
+pub func parseChannel(text: string): int {
+    let s = stripSpaces(text);
+    if (s.len() == 0) {
+        throw ValueError("empty channel value");
+    }
+    if (s.len() > 6) {
+        throw ValueError("channel value too long: '" + text + "'");
+    }
+    var n = 0;
+    var i = 0;
+    while (i < s.len()) {
+        var d = -1;
+        var k = 0;
+        while (k < 10) {
+            if (s[i] == DIGITS[k]) {
+                d = k;
+            }
+            k = k + 1;
+        }
+        if (d < 0) {
+            throw ValueError("not a number: '" + text + "'");
+        }
+        n = n * 10 + d;
+        i = i + 1;
+    }
+    return n;
+}

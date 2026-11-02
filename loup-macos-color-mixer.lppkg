@@ -1,0 +1,16 @@
+name = "loup-macos-color-mixer"
+version = "0.1.0"
+description = "A color mixer: RGB / HSB sliders, a hex field, a swatch and its harmonies drawn on a canvas (macOS, AppKit)."
+
+[build]
+entry = "src/main.lphc"
+mode = "host.native"
+delivery = "native"
+
+[dependencies]
+appkit = { path = "../loup-macos-appkit" }
+
+# AppKit's classes are found by name at run time, so nothing the program calls
+# pulls the framework in: link it here.
+[delivery.native]
+framework = ["AppKit"]

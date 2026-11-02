@@ -1,0 +1,194 @@
+== start
+  mode    RGB   menu [x] RGB Sliders  [ ] HSB Sliders
+  names   Red Green Blue
+  fields  46 134 222
+  sliders 46/255 134/255 222/255
+  hex     #2E86DE   well #2E86DE   swatch #2E86DE
+  status  Drag a slider, type a value or a hex color, or click a harmony swatch.   (systemGrayColor)
+  harmony Complement: #DE862E
+  harmony Analog −30°: #2EDEDE
+  harmony Analog +30°: #2E2EDE
+  harmony Triad +120°: #DE2E86
+  harmony Triad +240°: #86DE2E
+== drag Red to 230, Green to 90
+  mode    RGB   menu [x] RGB Sliders  [ ] HSB Sliders
+  names   Red Green Blue
+  fields  230 90 222
+  sliders 230/255 90/255 222/255
+  hex     #E65ADE   well #E65ADE   swatch #E65ADE
+  status  Drag a slider, type a value or a hex color, or click a harmony swatch.   (systemGrayColor)
+== type 40 in Blue, Return
+  mode    RGB   menu [x] RGB Sliders  [ ] HSB Sliders
+  names   Red Green Blue
+  fields  230 90 40
+  sliders 230/255 90/255 40/255
+  hex     #E65A28   well #E65A28   swatch #E65A28
+  status  Drag a slider, type a value or a hex color, or click a harmony swatch.   (systemGrayColor)
+== type 300 in Green (applied live, clamped; the field keeps what was typed)
+  mode    RGB   menu [x] RGB Sliders  [ ] HSB Sliders
+  names   Red Green Blue
+  fields  230 300 40
+  sliders 230/255 255/255 40/255
+  hex     #E6FF28   well #E6FF28   swatch #E6FF28
+  status  Drag a slider, type a value or a hex color, or click a harmony swatch.   (systemGrayColor)
+== press Return in Green (the field shows the clamped value)
+  mode    RGB   menu [x] RGB Sliders  [ ] HSB Sliders
+  names   Red Green Blue
+  fields  230 255 40
+  sliders 230/255 255/255 40/255
+  hex     #E6FF28   well #E6FF28   swatch #E6FF28
+  status  Drag a slider, type a value or a hex color, or click a harmony swatch.   (systemGrayColor)
+== type 1, 2, x in Red (1 and 12 applied live, 12x rejected)
+  mode    RGB   menu [x] RGB Sliders  [ ] HSB Sliders
+  names   Red Green Blue
+  fields  12x 255 40
+  sliders 12/255 255/255 40/255
+  hex     #0CFF28   well #0CFF28   swatch #0CFF28
+  status  Type a whole number for Red.   (systemRedColor)
+== clear Red to retype it (no complaint while it is empty)
+  mode    RGB   menu [x] RGB Sliders  [ ] HSB Sliders
+  names   Red Green Blue
+  fields  (empty) 255 40
+  sliders 12/255 255/255 40/255
+  hex     #0CFF28   well #0CFF28   swatch #0CFF28
+  status  Drag a slider, type a value or a hex color, or click a harmony swatch.   (systemGrayColor)
+== type 230 in Red, Return
+  mode    RGB   menu [x] RGB Sliders  [ ] HSB Sliders
+  names   Red Green Blue
+  fields  230 255 40
+  sliders 230/255 255/255 40/255
+  hex     #E6FF28   well #E6FF28   swatch #E6FF28
+  status  Drag a slider, type a value or a hex color, or click a harmony swatch.   (systemGrayColor)
+== type #3cb371 in Hex
+  mode    RGB   menu [x] RGB Sliders  [ ] HSB Sliders
+  names   Red Green Blue
+  fields  60 179 113
+  sliders 60/255 179/255 113/255
+  hex     #3CB371   well #3CB371   swatch #3CB371
+  status  Set #3CB371.   (systemGrayColor)
+  harmony Complement: #B33C7E
+  harmony Analog −30°: #43B33C
+  harmony Analog +30°: #3CB3AD
+  harmony Triad +120°: #713CB3
+  harmony Triad +240°: #B3713C
+== type #12345 in Hex (rejected)
+  mode    RGB   menu [x] RGB Sliders  [ ] HSB Sliders
+  names   Red Green Blue
+  fields  60 179 113
+  sliders 60/255 179/255 113/255
+  hex     #12345   well #3CB371   swatch #3CB371
+  status  “#12345” is not a hex color: use #RRGGBB or #RGB.   (systemRedColor)
+== type f80 in Hex (short form)
+  mode    RGB   menu [x] RGB Sliders  [ ] HSB Sliders
+  names   Red Green Blue
+  fields  255 136 0
+  sliders 255/255 136/255 0/255
+  hex     #FF8800   well #FF8800   swatch #FF8800
+  status  Set #FF8800.   (systemGrayColor)
+== switch to HSB
+  mode    HSB   menu [ ] RGB Sliders  [x] HSB Sliders
+  names   Hue Saturation Brightness
+  fields  32° 100% 100%
+  sliders 32/360 100/100 100/100
+  hex     #FF8800   well #FF8800   swatch #FF8800
+  status  Drag a slider, type a value or a hex color, or click a harmony swatch.   (systemGrayColor)
+== drag Hue to its right end (360° stays 360°)
+  mode    HSB   menu [ ] RGB Sliders  [x] HSB Sliders
+  names   Hue Saturation Brightness
+  fields  360° 100% 100%
+  sliders 360/360 100/100 100/100
+  hex     #FF0000   well #FF0000   swatch #FF0000
+  status  Drag a slider, type a value or a hex color, or click a harmony swatch.   (systemGrayColor)
+== type 500 in Hue, Return (clamped to 360°)
+  mode    HSB   menu [ ] RGB Sliders  [x] HSB Sliders
+  names   Hue Saturation Brightness
+  fields  360° 100% 100%
+  sliders 360/360 100/100 100/100
+  hex     #FF0000   well #FF0000   swatch #FF0000
+  status  Drag a slider, type a value or a hex color, or click a harmony swatch.   (systemGrayColor)
+== drag Hue to 200
+  mode    HSB   menu [ ] RGB Sliders  [x] HSB Sliders
+  names   Hue Saturation Brightness
+  fields  200° 100% 100%
+  sliders 200/360 100/100 100/100
+  hex     #00AAFF   well #00AAFF   swatch #00AAFF
+  status  Drag a slider, type a value or a hex color, or click a harmony swatch.   (systemGrayColor)
+== type 40 in Saturation, Return
+  mode    HSB   menu [ ] RGB Sliders  [x] HSB Sliders
+  names   Hue Saturation Brightness
+  fields  200° 40% 100%
+  sliders 200/360 40/100 100/100
+  hex     #99DDFF   well #99DDFF   swatch #99DDFF
+  status  Drag a slider, type a value or a hex color, or click a harmony swatch.   (systemGrayColor)
+== drag Brightness to 0 and back to 85 (hue and saturation kept)
+  mode    HSB   menu [ ] RGB Sliders  [x] HSB Sliders
+  names   Hue Saturation Brightness
+  fields  200° 40% 85%
+  sliders 200/360 40/100 85/100
+  hex     #82BCD9   well #82BCD9   swatch #82BCD9
+  status  Drag a slider, type a value or a hex color, or click a harmony swatch.   (systemGrayColor)
+  harmony Complement: #D99F82
+  harmony Analog −30°: #82D9CA
+  harmony Analog +30°: #8290D9
+  harmony Triad +120°: #D982BC
+  harmony Triad +240°: #BCD982
+== click the Triad +120° swatch
+  mode    HSB   menu [ ] RGB Sliders  [x] HSB Sliders
+  names   Hue Saturation Brightness
+  fields  320° 40% 85%
+  sliders 320/360 40/100 85/100
+  hex     #D982BC   well #D982BC   swatch #D982BC
+  status  Now using the Triad +120° #D982BC.   (systemGrayColor)
+== pick #3366CC in the color well
+  mode    HSB   menu [ ] RGB Sliders  [x] HSB Sliders
+  names   Hue Saturation Brightness
+  fields  220° 75% 80%
+  sliders 220/360 75/100 80/100
+  hex     #3366CC   well #3366CC   swatch #3366CC
+  status  Picked #3366CC in the color panel.   (systemGrayColor)
+== Color > RGB Sliders, Color > Use Complement
+  mode    RGB   menu [x] RGB Sliders  [ ] HSB Sliders
+  names   Red Green Blue
+  fields  204 153 51
+  sliders 204/255 153/255 51/255
+  hex     #CC9933   well #CC9933   swatch #CC9933
+  status  Now using the Complement #CC9933.   (systemGrayColor)
+== press ⌘2 (Color > HSB Sliders)
+  mode    HSB   menu [ ] RGB Sliders  [x] HSB Sliders
+  names   Hue Saturation Brightness
+  fields  40° 75% 80%
+  sliders 40/360 75/100 80/100
+  hex     #CC9933   well #CC9933   swatch #CC9933
+  status  Drag a slider, type a value or a hex color, or click a harmony swatch.   (systemGrayColor)
+== press ⌘K (Color > Use Complement)
+  mode    HSB   menu [ ] RGB Sliders  [x] HSB Sliders
+  names   Hue Saturation Brightness
+  fields  220° 75% 80%
+  sliders 220/360 75/100 80/100
+  hex     #3366CC   well #3366CC   swatch #3366CC
+  status  Now using the Complement #3366CC.   (systemGrayColor)
+== press ⌘1 (Color > RGB Sliders)
+  mode    RGB   menu [x] RGB Sliders  [ ] HSB Sliders
+  names   Red Green Blue
+  fields  51 102 204
+  sliders 51/255 102/255 204/255
+  hex     #3366CC   well #3366CC   swatch #3366CC
+  status  Drag a slider, type a value or a hex color, or click a harmony swatch.   (systemGrayColor)
+== click Copy Hex
+  clipboard #3366CC
+  status    Copied #3366CC to the clipboard.
+== put other text on the clipboard, press ⇧⌘C (Color > Copy Hex)
+  clipboard #3366CC
+  status    Copied #3366CC to the clipboard.
+== final
+  mode    HSB   menu [ ] RGB Sliders  [x] HSB Sliders
+  names   Hue Saturation Brightness
+  fields  210° 79% 87%
+  sliders 210/360 79/100 87/100
+  hex     #2E86DE   well #2E86DE   swatch #2E86DE
+  status  Set #2E86DE.   (systemGrayColor)
+  harmony Complement: #DE862E
+  harmony Analog −30°: #2EDEDE
+  harmony Analog +30°: #2E2EDE
+  harmony Triad +120°: #DE2E86
+  harmony Triad +240°: #86DE2E
